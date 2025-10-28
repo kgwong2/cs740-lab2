@@ -29,8 +29,6 @@ namespace conga {
 
     const uint64_t LEAF_SPEED = 10000000000; // 10gbps
     const uint64_t CORE_SPEED = 40000000000; // 40gbps
-
-    
 }
 
 using namespace std;
@@ -49,25 +47,35 @@ conga_testbed(const ArgList &args, Logfile &logfile)
     parseDouble(args, "utilization", utilization);
     parseInt(args, "flow_size", flow_size);
 
-    #include <sstream>
+    // Create TCP logger
+    TcpLoggerSimple* logTcp = new TcpLoggerSimple();
+    logfile.addLogger(*logTcp);
 
     // Create network components
-    vector<PacketSink*> core_switches(N_CORE);
-    vector<PacketSink*> leaf_switches(N_LEAF);
-    vector<vector<PacketSink*>> servers(N_LEAF, vector<PacketSink*>(N_SERVER));
+    vector<Queue*> core_switches(N_CORE);
+    vector<Queue*> leaf_switches(N_LEAF); 
+    vector<vector<Queue*>> servers(N_LEAF, vector<Queue*>(N_SERVER));
     
     // Initialize core switches with queues
     for (int i = 0; i < N_CORE; i++) {
         std::stringstream ss;
         ss << "core_" << i;
-        core_switches[i] = new FairQueue(CORE_SPEED, CORE_BUFFER, new QueueLoggerSampling(timeFromMs(10)));
+        QueueLoggerSampling* qs = new QueueLoggerSampling(timeFromMs(10));
+        logfile.addLogger(*qs);
+        core_switches[i] = new FairQueue(CORE_SPEED, CORE_BUFFER, qs);
+        core_switches[i]->setName(ss.str());
+        logfile.writeName(*core_switches[i]);
     }
 
     // Initialize leaf switches with queues
     for (int i = 0; i < N_LEAF; i++) {
         std::stringstream ss;
         ss << "leaf_" << i;
-        leaf_switches[i] = new FairQueue(LEAF_SPEED, LEAF_BUFFER, new QueueLoggerSampling(timeFromMs(10)));
+        QueueLoggerSampling* qs = new QueueLoggerSampling(timeFromMs(10));
+        logfile.addLogger(*qs);
+        leaf_switches[i] = new FairQueue(LEAF_SPEED, LEAF_BUFFER, qs);
+        leaf_switches[i]->setName(ss.str());
+        logfile.writeName(*leaf_switches[i]);
     }
 
     // Initialize servers and connect to leaf switches
@@ -75,11 +83,24 @@ conga_testbed(const ArgList &args, Logfile &logfile)
         for (int j = 0; j < N_SERVER; j++) {
             std::stringstream ss;
             ss << "server_" << i << "_" << j;
-            servers[i][j] = new FairQueue(LEAF_SPEED, ENDH_BUFFER, new QueueLoggerSampling(timeFromMs(10)));
+            QueueLoggerSampling* qs = new QueueLoggerSampling(timeFromMs(10));
+            logfile.addLogger(*qs);
+            servers[i][j] = new FairQueue(LEAF_SPEED, ENDH_BUFFER, qs);
+            servers[i][j]->setName(ss.str());
+            logfile.writeName(*servers[i][j]);
             
             // Connect server to leaf switch (bidirectional)
             Pipe* up_pipe = new Pipe(timeFromUs(10));
+            std::stringstream pss1;
+            pss1 << "pipe_server_" << i << "_" << j << "_to_leaf_" << i;
+            up_pipe->setName(pss1.str());
+            logfile.writeName(*up_pipe);
+
             Pipe* down_pipe = new Pipe(timeFromUs(10));
+            std::stringstream pss2;
+            pss2 << "pipe_leaf_" << i << "_to_server_" << i << "_" << j;
+            down_pipe->setName(pss2.str());
+            logfile.writeName(*down_pipe);
             
             // Set up routes between server and leaf switch
             route_t* up_route = new route_t();
@@ -100,7 +121,16 @@ conga_testbed(const ArgList &args, Logfile &logfile)
             
             // Bidirectional links between leaf and core
             Pipe* up_pipe = new Pipe(timeFromUs(10));
+            std::stringstream pss1;
+            pss1 << "pipe_leaf_" << i << "_to_core_" << j;
+            up_pipe->setName(pss1.str());
+            logfile.writeName(*up_pipe);
+
             Pipe* down_pipe = new Pipe(timeFromUs(10));
+            std::stringstream pss2;
+            pss2 << "pipe_core_" << j << "_to_leaf_" << i;
+            down_pipe->setName(pss2.str());
+            logfile.writeName(*down_pipe);
             
             // Set up routes between leaf and core switches
             route_t* up_route = new route_t();
@@ -146,7 +176,7 @@ conga_testbed(const ArgList &args, Logfile &logfile)
     FlowGenerator* fg = new FlowGenerator(
         DataSource::TCP,  // Use TCP endpoints
         route_gen,               // Route generator function
-        LEAF_SPEED,             // Flow rate (limited by leaf switch speed)
+        LEAF_SPEED * utilization,             // Flow rate (limited by leaf switch speed)
         flow_size,              // Average flow size
         Workloads::PARETO       // Flow size distribution
     );
