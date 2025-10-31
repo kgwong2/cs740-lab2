@@ -29,6 +29,14 @@ namespace conga {
 
     const uint64_t LEAF_SPEED = 10000000000; // 10gbps
     const uint64_t CORE_SPEED = 40000000000; // 40gbps
+
+    // Namespace-scope containers and route generator declaration so the
+    // FlowGenerator can reference a function pointer (no captures).
+    std::vector<Queue*> core_switches;
+    std::vector<Queue*> leaf_switches;
+    std::vector<std::vector<Queue*>> servers;
+
+    void generateRoute(route_t*& fwd, route_t*& rev, uint32_t& src_id, uint32_t& dst_id);
 }
 
 using namespace std;
@@ -37,24 +45,23 @@ using namespace conga;
 void
 conga_testbed(const ArgList &args, Logfile &logfile)
 {
-    EventList& eventlist = EventList::Get();
     double duration = 10.0;
     double utilization = 0.75;
-    uint32_t flow_size = BDP_BYTES;
+    uint32_t AvgFlowSize = 100000;    // Average flow size.
     
     // Parse arguments with defaults
     parseDouble(args, "duration", duration);
     parseDouble(args, "utilization", utilization);
-    parseInt(args, "flow_size", flow_size);
+    parseInt(args, "flowsize", AvgFlowSize);
 
     // Create TCP logger
     TcpLoggerSimple* logTcp = new TcpLoggerSimple();
     logfile.addLogger(*logTcp);
 
-    // Create network components
-    vector<Queue*> core_switches(N_CORE);
-    vector<Queue*> leaf_switches(N_LEAF); 
-    vector<vector<Queue*>> servers(N_LEAF, vector<Queue*>(N_SERVER));
+    // Namespace-level network components (defined below) - resize for this test
+    core_switches.assign(N_CORE, nullptr);
+    leaf_switches.assign(N_LEAF, nullptr);
+    servers.assign(N_LEAF, vector<Queue*>(N_SERVER));
     
     // Initialize core switches with queues
     for (int i = 0; i < N_CORE; i++) {
@@ -116,7 +123,7 @@ conga_testbed(const ArgList &args, Logfile &logfile)
     // Connect leaf switches to core switches (full mesh)
     for (int i = 0; i < N_LEAF; i++) {
         for (int j = 0; j < N_CORE; j++) {
-            std::stringstream ss;
+                std::stringstream ss;
             ss << "leaf_" << i << "_core_" << j;
             
             // Bidirectional links between leaf and core
@@ -143,60 +150,51 @@ conga_testbed(const ArgList &args, Logfile &logfile)
         }
     }
 
-    // Create route generator function
-    auto route_gen = [&](route_t*& fwd, route_t*& rev, uint32_t& src_id, uint32_t& dst_id) {
-        src_id = rand() % (N_LEAF * N_SERVER);
-        do {
-            dst_id = rand() % (N_LEAF * N_SERVER);
-        } while (dst_id == src_id);
-        
-        uint32_t src_leaf = src_id / N_SERVER;
-        uint32_t dst_leaf = dst_id / N_SERVER;
-        uint32_t core_switch = rand() % N_CORE;
-        
-        fwd = new route_t();
-        rev = new route_t();
-        
-        // Forward path: server -> leaf -> core -> leaf -> server
-        fwd->push_back(servers[src_leaf][src_id % N_SERVER]);
-        fwd->push_back(leaf_switches[src_leaf]);
-        fwd->push_back(core_switches[core_switch]);
-        fwd->push_back(leaf_switches[dst_leaf]);
-        fwd->push_back(servers[dst_leaf][dst_id % N_SERVER]);
-        
-        // Reverse path
-        rev->push_back(servers[dst_leaf][dst_id % N_SERVER]);
-        rev->push_back(leaf_switches[dst_leaf]);
-        rev->push_back(core_switches[core_switch]);
-        rev->push_back(leaf_switches[src_leaf]);
-        rev->push_back(servers[src_leaf][src_id % N_SERVER]);
-    };
-
     // Create flow generator with TCP endpoints
     FlowGenerator* fg = new FlowGenerator(
-        DataSource::TCP,  // Use TCP endpoints
-        route_gen,               // Route generator function
-        LEAF_SPEED * utilization,             // Flow rate (limited by leaf switch speed)
-        flow_size,              // Average flow size
-        Workloads::PARETO       // Flow size distribution
+        DataSource::TCP,      // Use TCP endpoints
+        generateRoute,        // Route generator function (namespace-level)
+        LEAF_SPEED * utilization, // Flow rate (limited by leaf switch speed)
+        AvgFlowSize,            // Average flow size
+        Workloads::PARETO     // Flow size distribution
     );
     
-    // Set time limits for flow generation
-    fg->setTimeLimits(0, timeFromSec(duration));
     
     // Configure endhost queues
     fg->setEndhostQueue(LEAF_SPEED, ENDH_BUFFER);
+    // Set time limits for flow generation
+    fg->setTimeLimits(0, timeFromSec(duration) - 1);
     
-    // Start the simulation
-    eventlist.sourceIsPendingRel(*fg, 0);
-    
-    // Set simulation end time
-    eventlist.setEndtime(timeFromSec(duration));
-    
-    // Run simulation
-    while (eventlist.doNextEvent()) {
-        if (eventlist.now() % timeFromSec(1) == 0) {
-            std::cout << "Progress: " << timeAsMs(eventlist.now()) << "ms" << std::endl;
-        }
-    }
+    EventList::Get().setEndtime(timeFromSec(duration));
+}
+
+// Implementation of the namespace-level route generator.
+void
+conga::generateRoute(route_t*& fwd, route_t*& rev, uint32_t& src_id, uint32_t& dst_id)
+{
+    src_id = rand() % (N_LEAF * N_SERVER);
+    do {
+        dst_id = rand() % (N_LEAF * N_SERVER);
+    } while (dst_id == src_id);
+
+    uint32_t src_leaf = src_id / N_SERVER;
+    uint32_t dst_leaf = dst_id / N_SERVER;
+    uint32_t core_switch = rand() % N_CORE;
+
+    fwd = new route_t();
+    rev = new route_t();
+
+    // Forward path: server -> leaf -> core -> leaf -> server
+    fwd->push_back(servers[src_leaf][src_id % N_SERVER]);
+    fwd->push_back(leaf_switches[src_leaf]);
+    fwd->push_back(core_switches[core_switch]);
+    fwd->push_back(leaf_switches[dst_leaf]);
+    fwd->push_back(servers[dst_leaf][dst_id % N_SERVER]);
+
+    // Reverse path
+    rev->push_back(servers[dst_leaf][dst_id % N_SERVER]);
+    rev->push_back(leaf_switches[dst_leaf]);
+    rev->push_back(core_switches[core_switch]);
+    rev->push_back(leaf_switches[src_leaf]);
+    rev->push_back(servers[src_leaf][src_id % N_SERVER]);
 }
