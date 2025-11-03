@@ -48,11 +48,22 @@ conga_testbed(const ArgList &args, Logfile &logfile)
     double duration = 10.0;
     double utilization = 0.75;
     uint32_t AvgFlowSize = 100000;    // Average flow size.
+    string FlowDist = "uniform";      // Flow Distribution.
     
     // Parse arguments with defaults
     parseDouble(args, "duration", duration);
     parseDouble(args, "utilization", utilization);
     parseInt(args, "flowsize", AvgFlowSize);
+    parseString(args, "flowdist", FlowDist);
+
+    Workloads::FlowDist fd  = Workloads::UNIFORM;
+    if (FlowDist == "pareto") {
+        fd = Workloads::PARETO;
+    } else if (FlowDist == "enterprise") {
+        fd = Workloads::ENTERPRISE;
+    } else if (FlowDist == "datamining") {
+        fd = Workloads::DATAMINING;
+    }
 
     // Create TCP logger
     TcpLoggerSimple* logTcp = new TcpLoggerSimple();
@@ -152,11 +163,11 @@ conga_testbed(const ArgList &args, Logfile &logfile)
 
     // Create flow generator with TCP endpoints
     FlowGenerator* fg = new FlowGenerator(
-        DataSource::TCP,      // Use TCP endpoints
-        generateRoute,        // Route generator function (namespace-level)
+        DataSource::TCP,          // Use TCP endpoints
+        generateRoute,            // Route generator function (namespace-level)
         LEAF_SPEED * utilization, // Flow rate (limited by leaf switch speed)
-        AvgFlowSize,            // Average flow size
-        Workloads::PARETO     // Flow size distribution
+        AvgFlowSize,              // Average flow size
+        fd                        // Flow size distribution
     );
     
     
